@@ -1,0 +1,36 @@
+{% extends 'base.html' %}{% block title %}SQL live lab{% endblock %}{% block content %}<div class="page-head sql-head"><div><div class="eyebrow">DATABASE SYSTEMS · LIVE SQL WORKBENCH</div><h1>Watch the <em>rows move.</em></h1><p class="muted">This page reads the same database your checkout and operations workflows write to.</p></div><div class="db-connection"><i class="live-dot"></i><span><small>CONNECTED DATABASE</small><b>{{ dialect|upper }} · {{ 'MySQL 8' if dialect=='mysql' else 'LOCAL SQLITE DEMO' }}</b></span><span id="live-label">Live refresh · every 2 seconds</span></div></div>
+<div class="sql-banner"><div class="sql-banner-mark">SQL</div><div><b>For a live SQL demonstration, open MySQL Workbench beside this page.</b><p>Run the queries in <code>sql/course_queries.sql</code>. Place an order or receive stock, then rerun the SELECT to see the committed values change in MySQL.</p></div><a class="btn primary" href="{{ url_for('download_course_queries') }}">Get teaching queries ↓</a></div>
+<div class="db-section-head"><div><div class="eyebrow">RELATIONAL SCHEMA</div><h2>Live table row counts</h2></div><a class="text-link" href="{{ url_for('download_schema') }}">Download MySQL schema.sql ↗</a></div><div class="db-table-grid">{% for name,count in tables %}<div class="db-table-card"><div><span class="table-glyph">▦</span><b>{{ name }}</b></div><strong data-table="{{ name }}">{{ count }}</strong><small>rows in current database</small></div>{% endfor %}</div>
+<div class="sql-main-grid"><section class="panel activity-panel"><div class="section-title"><div><div class="eyebrow">COMMITTED TRANSACTION JOURNAL</div><h2>SQL activity <span class="count" id="activity-count">{{ tables[-1][1] }} events</span></h2></div><button class="btn secondary" id="refresh-now" type="button">↻ Refresh now</button></div><p class="muted">These records are written in the same transaction as the related stock or order change. New events appear here automatically.</p><div class="activity-feed" id="activity-feed">{% for row in activity %}<article class="activity-row" data-id="{{ row.id }}"><div class="activity-top"><span class="event-tag">{{ row.event_type|replace('_',' ')|upper }}</span><time>{{ row.created_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC</time><span class="actor">{{ row.actor }}{% if row.order_id %} · Order #{{ row.order_id }}{% endif %}</span></div><p>{{ row.explanation }}</p><details><summary>Show SQL pattern and bound values</summary><pre><code>{{ row.sql_text }}</code></pre><div class="bind-values"><small>BOUND VALUES / BEFORE → AFTER</small><pre>{{ row.parameters_json }}</pre></div></details></article>{% else %}<div class="activity-empty" id="activity-empty"><span>⌁</span><b>Waiting for the first transaction</b><small>Place a customer order or receive stock. Its SQL activity will show here after commit.</small></div>{% endfor %}</div><div class="activity-footer"><span class="live-dot"></span> Polling the database activity table <code>sql_activity</code></div></section>
+<aside class="sql-side"><section class="panel"><div class="eyebrow">LIVE DEMO SEQUENCE</div><h2>Show one transaction</h2><ol class="sql-steps"><li><b>Open Workbench</b><small>Connect to the same MySQL `darkstore` database as the app.</small></li><li><b>Run baseline SELECT</b><small>Query `inventory.available_qty` and `reserved_qty`.</small></li><li><b>Place an order</b><small>Checkout reserves stock and writes order + line items atomically.</small></li><li><b>Run SELECT again</b><small>Compare stock values and inspect `orders`, `order_item`, and `sql_activity`.</small></li></ol><a class="btn secondary full" href="{{ url_for('download_schema') }}">Open schema DDL ↗</a></section><section class="panel query-card"><div class="eyebrow">KEY CONCURRENCY STATEMENT</div><h2>Row lock before reserve</h2><pre><code>SELECT i.id, i.available_qty
+FROM inventory AS i
+JOIN bin_location AS b ON b.id = i.bin_id
+WHERE b.store_id = :store_id
+  AND i.product_id = :product_id
+FOR UPDATE;</code></pre><p class="muted">On MySQL/InnoDB, checkout locks the selected stock rows, checks quantity, reserves units, inserts the order and commits as one transaction.</p></section><section class="panel"><div class="eyebrow">DATABASE CONNECTION</div><h2>Current driver</h2><p class="db-driver">{{ dialect|upper }}</p><p class="muted">The app and Workbench must point to the same MySQL server and database for external SELECT queries to show these changes.</p></section></aside></div>
+<script>
+(() => {
+  const endpoint = {{ url_for('database_activity')|tojson }};
+  const feed = document.getElementById('activity-feed');
+  let latestId = Math.max(0, ...Array.from(feed.querySelectorAll('[data-id]'), row => Number(row.dataset.id)));
+  function node(tag, cls, value) { const el=document.createElement(tag); if(cls) el.className=cls; if(value!==undefined) el.textContent=value; return el; }
+  function addEvent(row) {
+    const article=node('article','activity-row'); article.dataset.id=row.id;
+    const head=node('div','activity-top'); head.append(node('span','event-tag',row.event_type.replaceAll('_',' ').toUpperCase()),node('time','',row.created_at),node('span','actor',row.actor+(row.order_id?' · Order #'+row.order_id:'')));
+    article.append(head,node('p','',row.explanation));
+    const details=node('details'); details.append(node('summary','', 'Show SQL pattern and bound values'));
+    const sqlPre=node('pre'); sqlPre.append(node('code','',row.sql_text)); details.append(sqlPre);
+    const binds=node('div','bind-values'); binds.append(node('small','', 'BOUND VALUES / BEFORE → AFTER'),node('pre','',row.parameters_json)); details.append(binds); article.append(details);
+    const empty=document.getElementById('activity-empty'); if(empty) empty.remove(); feed.prepend(article); latestId=Math.max(latestId,Number(row.id));
+  }
+  async function refresh() {
+    try {
+      const response=await fetch(endpoint+'?after='+latestId,{headers:{'Accept':'application/json'},cache:'no-store'}); if(!response.ok) throw new Error('not connected');
+      const data=await response.json(); data.activity.forEach(addEvent);
+      Object.entries(data.counts).forEach(([name,count])=>{const cell=document.querySelector('[data-table="'+name+'"]'); if(cell) cell.textContent=count;});
+      document.getElementById('activity-count').textContent=data.counts.sql_activity+' events'; document.getElementById('live-label').textContent='Connected · refreshed '+new Date().toLocaleTimeString();
+    } catch (_) { document.getElementById('live-label').textContent='Reconnecting to database…'; }
+  }
+  document.getElementById('refresh-now').addEventListener('click',refresh); setInterval(refresh,2000);
+})();
+</script>{% endblock %}
